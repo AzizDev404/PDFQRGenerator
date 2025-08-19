@@ -21,27 +21,6 @@ app.use(express.json());
 // Statik papkani absolute yo'l bilan berish — har doim ishlaydi
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Session storage (oddiy memory storage)
-const sessions = new Map();
-
-// Login middleware
-const requireAuth = (req, res, next) => {
-  const sessionId = req.headers.authorization?.replace('Bearer ', '');
-  
-  if (!sessionId || !sessions.has(sessionId)) {
-    return res.status(401).json({ error: 'Avtorizatsiya kerak', needLogin: true });
-  }
-  
-  // Session vaqtini yangilash
-  sessions.set(sessionId, { loginTime: Date.now() });
-  next();
-};
-
-// Generate session ID
-const generateSessionId = () => {
-  return Date.now().toString() + Math.random().toString(36).slice(2, 15);
-};
-
 // ⛳️ SCHEMA (Mongoose model)
 const fileSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
@@ -77,57 +56,49 @@ const upload = multer({
     : cb(new Error('Faqat PDF fayllar qabul qilinadi!'), false)
 });
 
-// QR helper - TUZATILDI: faqat URL saqlash
+// QR helper - faqat URL saqlash
 const generateQRCode = async (url) => {
   const qrDir = path.join(__dirname, 'uploads', 'qrcodes');
   if (!fs.existsSync(qrDir)) fs.mkdirSync(qrDir, { recursive: true });
   const qrPath = path.join(qrDir, `qr_${Date.now()}.png`);
-  await QRCode.toFile(qrPath, url); // JSON.stringify o'rniga faqat URL
+  await QRCode.toFile(qrPath, url);
   return qrPath;
 };
 
-// 🔐 LOGIN ROUTES
+// 🔐 SODDALASHTIRILGAN LOGIN ROUTE
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   
+  // Ma'lumotlar mavjudligini tekshirish
   if (!username || !password) {
-    return res.status(400).json({ error: 'Username va password talab qilinadi' });
+    return res.status(400).json({ success: false, message: 'Username va password talab qilinadi' });
   }
   
-  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-    const sessionId = generateSessionId();
-    sessions.set(sessionId, { loginTime: Date.now() });
-    
-    // Session 24 soat davom etadi
-    setTimeout(() => {
-      sessions.delete(sessionId);
-    }, 24 * 60 * 60 * 1000);
-    
+  // ENV dan kelayotgan ma'lumotlar bilan taqqoslash
+  const isValid = username === ADMIN_USERNAME && password === ADMIN_PASSWORD;
+  
+  if (isValid) {
+    // Muvaffaqiyatli login
     res.json({ 
       success: true, 
-      message: 'Muvaffaqiyatli kirish',
-      sessionId: sessionId
+      message: 'Muvaffaqiyatli kirish'
     });
   } else {
-    res.status(401).json({ error: 'Noto\'g\'ri username yoki password' });
+    // Noto'g'ri ma'lumotlar
+    res.json({ 
+      success: false, 
+      message: 'Noto\'g\'ri username yoki password' 
+    });
   }
 });
 
-app.post('/api/logout', requireAuth, (req, res) => {
-  const sessionId = req.headers.authorization?.replace('Bearer ', '');
-  if (sessionId) {
-    sessions.delete(sessionId);
-  }
+// Logout route (ixtiyoriy)
+app.post('/api/logout', (req, res) => {
   res.json({ success: true, message: 'Muvaffaqiyatli chiqish' });
 });
 
-// Check auth status
-app.get('/api/check-auth', requireAuth, (req, res) => {
-  res.json({ authenticated: true });
-});
-
-// 🔒 PROTECTED ROUTES (login kerak bo'lgan routes)
-app.get("/api/qrs", requireAuth, async (req, res) => {
+// 📊 ROUTES (artiq hech qanday auth middleware yo'q)
+app.get("/api/qrs", async (req, res) => {
   try {
     const files = await FileModel.find();
     res.json(files);
@@ -136,7 +107,7 @@ app.get("/api/qrs", requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/upload', requireAuth, upload.array('pdfs', 10), async (req, res) => {
+app.post('/api/upload', upload.array('pdfs', 10), async (req, res) => {
   try {
     if (!req.files?.length) return res.status(400).json({ error: 'Hech qanday fayl yuklanmadi' });
 
@@ -144,7 +115,7 @@ app.post('/api/upload', requireAuth, upload.array('pdfs', 10), async (req, res) 
     for (const file of req.files) {
       const fileId = Date.now().toString() + Math.random().toString(36).slice(2, 11);
       
-      // TUZATILDI: QR kodda faqat URL saqlash
+      // QR kodda faqat URL saqlash
       const downloadUrl = `${req.protocol}://${req.get('host')}/api/pdf/${fileId}`;
       const qrCodePath = await generateQRCode(downloadUrl);
 
@@ -176,7 +147,7 @@ app.post('/api/upload', requireAuth, upload.array('pdfs', 10), async (req, res) 
   }
 });
 
-app.get('/api/files', requireAuth, async (req, res) => {
+app.get('/api/files', async (req, res) => {
   try {
     const page = +req.query.page || 1;
     const limit = +req.query.limit || 10;
@@ -206,7 +177,7 @@ app.get('/api/files', requireAuth, async (req, res) => {
   }
 });
 
-app.delete('/api/file/:id', requireAuth, async (req, res) => {
+app.delete('/api/file/:id', async (req, res) => {
   try {
     const file = await FileModel.findOne({ id: req.params.id });
     if (!file) return res.status(404).json({ error: 'Fayl topilmadi' });
@@ -221,7 +192,7 @@ app.delete('/api/file/:id', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/stats', requireAuth, async (req, res) => {
+app.get('/api/stats', async (req, res) => {
   try {
     const [totalFiles, downloadsAgg, recentFiles] = await Promise.all([
       FileModel.countDocuments(),
